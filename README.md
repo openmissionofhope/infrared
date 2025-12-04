@@ -98,7 +98,6 @@ Infrared is intentionally compatible with:
 - research tools  
 - analytical databases  
 - event-driven architectures  
-- OMH safety infrastructure  
 
 ---
 
@@ -136,7 +135,7 @@ enough to see **life**, never enough to see **individuals**.
 
 ## 📘 License
 
-Open-source license TBD by the Open Mission of Hope (OMH).
+GNU General Public License v3.0
 
 ---
 
