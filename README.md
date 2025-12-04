@@ -202,16 +202,93 @@ Infrared observes only **population heat**, never individuals.
 
 ---
 
+## External Data Sources
+
+Infrared can pull near real-time country-level connectivity data from public APIs to detect large-scale outages ("everyone suddenly offline" scenarios).
+
+### IODA (Internet Outage Detection and Analysis)
+
+IODA monitors the Internet in near real-time to identify macroscopic outages at the country, regional, or ASN level. Data updates every ~5 minutes.
+
+```rust
+use infrared::data_sources::IodaClient;
+
+let client = IodaClient::new();
+
+// Get outage alerts from the last 24 hours for all countries
+let alerts = client.get_recent_alerts(24).await?;
+
+// Get alerts for a specific country (ISO 3166-1 alpha-2 code)
+let us_alerts = client.get_recent_country_alerts("US", 6).await?;
+
+// Get raw connectivity signals (BGP, active probing, darknet)
+let now = chrono::Utc::now().timestamp();
+let one_day_ago = now - 86400;
+let signals = client.get_country_signals("DE", one_day_ago, now).await?;
+
+// Check for significant drops
+for alert in alerts.data {
+    println!("{}: {}% drop", alert.entity_name, alert.drop_percentage());
+}
+```
+
+### Cloudflare Radar
+
+Cloudflare Radar provides traffic volume data from Cloudflare's global network (330+ cities, 120+ countries). Data available at 15-minute granularity.
+
+```rust
+use infrared::data_sources::CloudflareRadarClient;
+
+// API token required for best results (free tier available)
+let client = CloudflareRadarClient::new(Some("your-api-token".into()));
+
+// Get last 24 hours of traffic for a country
+let traffic = client.get_daily_traffic("US").await?;
+
+// Get last 7 days
+let weekly = client.get_weekly_traffic("JP").await?;
+
+// Compare multiple countries
+let comparison = client.compare_countries(&["US", "DE", "JP"], "7d").await?;
+
+// Detect significant traffic drops
+if let Some(result) = traffic.result {
+    for series in result.series {
+        if series.has_significant_drop(0.5) {
+            println!("Traffic in {} dropped below 50% of average!", series.name);
+        }
+    }
+}
+
+// Get verified traffic anomalies
+let anomalies = client.get_traffic_anomalies(Some("US"), "7d").await?;
+```
+
+### Data Source Comparison
+
+| Source | Update Frequency | Auth Required | Best For |
+|--------|-----------------|---------------|----------|
+| IODA   | ~5 minutes      | No            | Outage detection, BGP analysis |
+| Cloudflare Radar | ~15 minutes | Yes (free API token) | Traffic volume trends |
+
+Both sources provide **aggregate country-level data only**—no individual tracking.
+
+---
+
 ## Architecture
 
 ```
 src/
-├── main.rs        # Entry point, server setup
-├── lib.rs         # Library exports
-├── model.rs       # Data types (LifeSignal, WarmthStatus, etc.)
-├── storage.rs     # SQLite operations
-├── aggregation.rs # Warmth index calculations
-└── api.rs         # HTTP handlers
+├── main.rs          # Entry point, server setup
+├── lib.rs           # Library exports
+├── model.rs         # Data types (LifeSignal, WarmthStatus, etc.)
+├── storage.rs       # SQLite operations
+├── aggregation.rs   # Warmth index calculations
+├── api.rs           # HTTP handlers
+└── data_sources/    # External data source clients
+    ├── mod.rs       # Module exports
+    ├── ioda.rs      # IODA outage detection client
+    └── cloudflare.rs # Cloudflare Radar traffic client
 ```
 
 ---

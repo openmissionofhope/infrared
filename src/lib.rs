@@ -27,5 +27,6 @@
 
 pub mod aggregation;
 pub mod api;
+pub mod data_sources;
 pub mod model;
 pub mod storage;
