@@ -1,0 +1,43 @@
+[package]
+name = "infrared"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91.1"
+description = "A privacy-preserving system for detecting signs of life at scale"
+license = "Apache-2.0"
+authors = ["Infrared Contributors"]
+
+[dependencies]
+anyhow = "1"
+
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+
+# Date and time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+
+# Error handling
+thiserror = "1"
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Tower for middleware
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace"] }
+
+# Logging/Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+axum-test = "15"
+# Testing
+tokio-test = "0.4"
+tower = { version = "0.4", features = ["util"] }
