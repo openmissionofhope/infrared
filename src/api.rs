@@ -19,14 +19,16 @@
 
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
 use chrono::Utc;
+use serde::Deserialize;
 use tracing::{info, instrument, warn};
 
 use crate::aggregation::{compute_warmth, generate_alerts};
+use crate::dashboard::{Dashboard, DashboardResponse, IssueSource};
 use crate::model::{
     AlertsQuery, AlertsResponse, LifeSignal, SignalRequest, WarmthQuery, WarmthResponse,
 };
@@ -36,6 +38,7 @@ use crate::storage::Storage;
 #[derive(Clone)]
 pub struct AppState {
     pub storage: Storage,
+    pub dashboard: Option<Dashboard>,
 }
 
 /// POST /signal - Record a life signal.
@@ -200,4 +203,227 @@ pub async fn get_alerts(
 /// GET /health - Simple health check endpoint.
 pub async fn health_check() -> impl IntoResponse {
     StatusCode::OK
+}
+
+// ============================================================================
+// Dashboard API handlers
+// ============================================================================
+
+/// Query parameters for the dashboard endpoint.
+#[derive(Debug, Deserialize)]
+pub struct DashboardQuery {
+    /// Filter by source (ioda, cloudflare_radar, hdx_hapi, acled, reliefweb).
+    pub source: Option<String>,
+    /// Filter by country code.
+    pub country: Option<String>,
+}
+
+/// GET /dashboard - Get aggregated issues from all data sources.
+///
+/// # Query Parameters
+///
+/// - `source` (optional): Filter by source (ioda, cloudflare_radar, hdx_hapi, acled, reliefweb)
+/// - `country` (optional): Filter by country code
+///
+/// # Response
+///
+/// Returns a JSON object with:
+/// - `timestamp`: When the response was generated
+/// - `summary`: Summary statistics (counts by severity, source, category)
+/// - `issues`: List of issues sorted by severity and timestamp
+/// - `errors`: Any errors encountered while fetching from sources
+#[instrument(skip(state))]
+pub async fn get_dashboard(
+    State(state): State<AppState>,
+    Query(query): Query<DashboardQuery>,
+) -> Result<Json<DashboardResponse>, StatusCode> {
+    let dashboard = state.dashboard.as_ref().ok_or_else(|| {
+        warn!("Dashboard not configured");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    // Filter by country if specified
+    if let Some(country) = &query.country {
+        match dashboard.get_issues_by_country(country).await {
+            Ok(issues) => {
+                let summary = crate::dashboard::DashboardSummary::from_issues(&issues);
+                let response = DashboardResponse {
+                    timestamp: Utc::now(),
+                    summary,
+                    issues,
+                    errors: vec![],
+                };
+                info!(
+                    country = %country,
+                    issue_count = response.issues.len(),
+                    "Dashboard queried by country"
+                );
+                return Ok(Json(response));
+            }
+            Err(e) => {
+                warn!(country = %country, error = %e, "Failed to fetch dashboard by country");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    // Filter by source if specified
+    if let Some(source_str) = &query.source {
+        let source = match source_str.as_str() {
+            "ioda" => IssueSource::Ioda,
+            "cloudflare_radar" | "cloudflare" => IssueSource::CloudflareRadar,
+            "hdx_hapi" | "hdx" | "hapi" => IssueSource::HdxHapi,
+            "acled" => IssueSource::Acled,
+            "reliefweb" => IssueSource::ReliefWeb,
+            _ => {
+                warn!(source = %source_str, "Invalid source filter");
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        };
+
+        match dashboard.get_issues_by_source(source).await {
+            Ok(issues) => {
+                let summary = crate::dashboard::DashboardSummary::from_issues(&issues);
+                let response = DashboardResponse {
+                    timestamp: Utc::now(),
+                    summary,
+                    issues,
+                    errors: vec![],
+                };
+                info!(
+                    source = %source_str,
+                    issue_count = response.issues.len(),
+                    "Dashboard queried by source"
+                );
+                return Ok(Json(response));
+            }
+            Err(e) => {
+                warn!(source = %source_str, error = %e, "Failed to fetch dashboard by source");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    // Get all issues
+    match dashboard.get_all_issues().await {
+        Ok(response) => {
+            info!(
+                issue_count = response.issues.len(),
+                error_count = response.errors.len(),
+                "Dashboard queried"
+            );
+            Ok(Json(response))
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to fetch dashboard");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// GET /dashboard/summary - Get just the summary statistics.
+#[instrument(skip(state))]
+pub async fn get_dashboard_summary(
+    State(state): State<AppState>,
+) -> Result<Json<crate::dashboard::DashboardSummary>, StatusCode> {
+    let dashboard = state.dashboard.as_ref().ok_or_else(|| {
+        warn!("Dashboard not configured");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    match dashboard.get_all_issues().await {
+        Ok(response) => {
+            info!(
+                total_issues = response.summary.total_issues,
+                emergency_count = response.summary.emergency_count,
+                critical_count = response.summary.critical_count,
+                "Dashboard summary queried"
+            );
+            Ok(Json(response.summary))
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to fetch dashboard summary");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// GET /dashboard/country/:code - Get issues for a specific country.
+#[instrument(skip(state))]
+pub async fn get_dashboard_by_country(
+    State(state): State<AppState>,
+    Path(country_code): Path<String>,
+) -> Result<Json<DashboardResponse>, StatusCode> {
+    let dashboard = state.dashboard.as_ref().ok_or_else(|| {
+        warn!("Dashboard not configured");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    match dashboard.get_issues_by_country(&country_code).await {
+        Ok(issues) => {
+            let summary = crate::dashboard::DashboardSummary::from_issues(&issues);
+            let response = DashboardResponse {
+                timestamp: Utc::now(),
+                summary,
+                issues,
+                errors: vec![],
+            };
+            info!(
+                country = %country_code,
+                issue_count = response.issues.len(),
+                "Dashboard queried by country"
+            );
+            Ok(Json(response))
+        }
+        Err(e) => {
+            warn!(country = %country_code, error = %e, "Failed to fetch dashboard by country");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// GET /dashboard/source/:source - Get issues from a specific source.
+#[instrument(skip(state))]
+pub async fn get_dashboard_by_source(
+    State(state): State<AppState>,
+    Path(source_str): Path<String>,
+) -> Result<Json<DashboardResponse>, StatusCode> {
+    let dashboard = state.dashboard.as_ref().ok_or_else(|| {
+        warn!("Dashboard not configured");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    let source = match source_str.as_str() {
+        "ioda" => IssueSource::Ioda,
+        "cloudflare_radar" | "cloudflare" => IssueSource::CloudflareRadar,
+        "hdx_hapi" | "hdx" | "hapi" => IssueSource::HdxHapi,
+        "acled" => IssueSource::Acled,
+        "reliefweb" => IssueSource::ReliefWeb,
+        _ => {
+            warn!(source = %source_str, "Invalid source");
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+
+    match dashboard.get_issues_by_source(source).await {
+        Ok(issues) => {
+            let summary = crate::dashboard::DashboardSummary::from_issues(&issues);
+            let response = DashboardResponse {
+                timestamp: Utc::now(),
+                summary,
+                issues,
+                errors: vec![],
+            };
+            info!(
+                source = %source_str,
+                issue_count = response.issues.len(),
+                "Dashboard queried by source"
+            );
+            Ok(Json(response))
+        }
+        Err(e) => {
+            warn!(source = %source_str, error = %e, "Failed to fetch dashboard by source");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }

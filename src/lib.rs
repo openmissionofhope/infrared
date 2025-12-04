@@ -24,9 +24,17 @@
 //! - [`storage`]: SQLite storage layer
 //! - [`aggregation`]: Logic for computing warmth indices
 //! - [`api`]: HTTP API handlers
+//! - [`data_sources`]: External data source clients (IODA, Cloudflare, HDX, ACLED, ReliefWeb)
+//! - [`dashboard`]: Dashboard for aggregating issues from all data sources
 
 pub mod aggregation;
 pub mod api;
+pub mod dashboard;
 pub mod data_sources;
 pub mod model;
 pub mod storage;
+
+// Re-export data source clients for convenience
+pub use data_sources::{
+    AcledClient, CloudflareRadarClient, HdxHapiClient, IodaClient, ReliefWebClient,
+};

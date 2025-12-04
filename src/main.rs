@@ -20,10 +20,19 @@
 //!
 //! # API Endpoints
 //!
+//! ## Core Endpoints
+//!
 //! - `POST /signal` - Record a life signal
 //! - `GET /warmth` - Query the warmth index for a bucket
 //! - `GET /alerts/recent` - Get alerts for buckets in distress
 //! - `GET /health` - Health check
+//!
+//! ## Dashboard Endpoints (requires configuration)
+//!
+//! - `GET /dashboard` - Aggregated issues from all data sources
+//! - `GET /dashboard/summary` - Summary statistics only
+//! - `GET /dashboard/country/:code` - Issues for a specific country
+//! - `GET /dashboard/source/:source` - Issues from a specific source
 
 use std::env;
 use std::net::SocketAddr;
@@ -33,7 +42,11 @@ use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use infrared::api::{AppState, get_alerts, get_warmth, health_check, post_signal};
+use infrared::api::{
+    AppState, get_alerts, get_dashboard, get_dashboard_by_country, get_dashboard_by_source,
+    get_dashboard_summary, get_warmth, health_check, post_signal,
+};
+use infrared::dashboard::{Dashboard, DashboardConfig};
 use infrared::storage::Storage;
 
 /// Default port if not specified via environment variable.
@@ -65,17 +78,34 @@ async fn main() -> anyhow::Result<()> {
     let storage = Storage::new(&db_url).await?;
     info!("Database initialized");
 
+    // Initialize dashboard if configured
+    let dashboard = create_dashboard_if_configured();
+    let dashboard_enabled = dashboard.is_some();
+
     // Create application state
-    let state = AppState { storage };
+    let state = AppState { storage, dashboard };
 
     // Build router
     // PRIVACY NOTE: We do NOT use any middleware that logs IP addresses or headers
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/signal", post(post_signal))
         .route("/warmth", get(get_warmth))
         .route("/alerts/recent", get(get_alerts))
-        .route("/health", get(health_check))
-        .with_state(state);
+        .route("/health", get(health_check));
+
+    // Add dashboard routes if configured
+    if dashboard_enabled {
+        app = app
+            .route("/dashboard", get(get_dashboard))
+            .route("/dashboard/summary", get(get_dashboard_summary))
+            .route("/dashboard/country/:code", get(get_dashboard_by_country))
+            .route("/dashboard/source/:source", get(get_dashboard_by_source));
+        info!("Dashboard enabled with external data sources");
+    } else {
+        info!("Dashboard disabled (set ACLED_EMAIL/ACLED_KEY for full functionality)");
+    }
+
+    let app = app.with_state(state);
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -87,4 +117,30 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+/// Create dashboard configuration from environment variables.
+///
+/// # Environment Variables
+///
+/// - `ACLED_EMAIL` - Email for ACLED API authentication (optional)
+/// - `ACLED_KEY` - API key for ACLED API authentication (optional)
+/// - `CLOUDFLARE_TOKEN` - Cloudflare API token for higher rate limits (optional)
+/// - `DASHBOARD_APP_ID` - Application identifier for HDX/ReliefWeb (default: "infrared")
+/// - `DASHBOARD_LOOKBACK_HOURS` - Hours to look back for issues (default: 24)
+fn create_dashboard_if_configured() -> Option<Dashboard> {
+    let config = DashboardConfig {
+        acled_email: env::var("ACLED_EMAIL").ok(),
+        acled_key: env::var("ACLED_KEY").ok(),
+        cloudflare_token: env::var("CLOUDFLARE_TOKEN").ok(),
+        app_identifier: env::var("DASHBOARD_APP_ID").unwrap_or_else(|_| "infrared".to_string()),
+        monitored_countries: vec![], // Countries can be configured via API or extended config
+        lookback_hours: env::var("DASHBOARD_LOOKBACK_HOURS")
+            .ok()
+            .and_then(|h| h.parse().ok())
+            .unwrap_or(24),
+    };
+
+    // Dashboard is always enabled, but ACLED data requires authentication
+    Some(Dashboard::new(config))
 }

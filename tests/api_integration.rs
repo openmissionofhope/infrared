@@ -12,7 +12,10 @@ use infrared::storage::Storage;
 
 async fn create_test_server() -> TestServer {
     let storage = Storage::new("sqlite::memory:").await.unwrap();
-    let state = AppState { storage };
+    let state = AppState {
+        storage,
+        dashboard: None, // Dashboard not needed for core API tests
+    };
 
     let app = Router::new()
         .route("/signal", post(post_signal))
