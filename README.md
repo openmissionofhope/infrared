@@ -204,7 +204,11 @@ Infrared observes only **population heat**, never individuals.
 
 ## External Data Sources
 
-Infrared can pull near real-time country-level connectivity data from public APIs to detect large-scale outages ("everyone suddenly offline" scenarios).
+Infrared integrates with multiple public APIs to detect large-scale crises:
+
+- **Internet connectivity**: Detect "everyone suddenly offline" scenarios via IODA and Cloudflare Radar
+- **Humanitarian data**: Track disasters, displacement, and food security via ReliefWeb and HDX HAPI
+- **Conflict monitoring**: Monitor violence, protests, and unrest via ACLED
 
 ### IODA (Internet Outage Detection and Analysis)
 
@@ -264,14 +268,156 @@ if let Some(result) = traffic.result {
 let anomalies = client.get_traffic_anomalies(Some("US"), "7d").await?;
 ```
 
+### ReliefWeb
+
+ReliefWeb is OCHA's humanitarian information service, aggregating reports, disasters, and updates from 4,000+ sources worldwide. Useful for detecting humanitarian crises, natural disasters, and conflict situations.
+
+```rust
+use infrared::data_sources::ReliefWebClient;
+
+let client = ReliefWebClient::new("my-app-name");
+
+// Get ongoing disasters
+let disasters = client.get_ongoing_disasters(Some(50)).await?;
+
+// Get disasters for a specific country
+let syria_disasters = client.get_disasters(Some("Syria"), Some("ongoing"), None).await?;
+
+// Get disasters by type
+let floods = client.get_disasters_by_type("Flood", Some(20)).await?;
+
+// Get recent humanitarian reports
+let reports = client.get_reports(Some("Ukraine"), None, Some(10)).await?;
+
+// Search reports by keyword
+let conflict_reports = client.search_reports("displacement crisis", Some(25)).await?;
+
+// Get country information
+let country = client.get_country("AFG").await?;
+
+// Check disaster status
+for item in disasters.data {
+    if item.fields.is_ongoing() {
+        println!("{}: {} ({})",
+            item.fields.name,
+            item.fields.type_name().unwrap_or("Unknown"),
+            item.fields.country_name().unwrap_or("Unknown")
+        );
+    }
+}
+```
+
+### HDX HAPI (Humanitarian Data Exchange)
+
+HDX HAPI provides standardized humanitarian indicators from OCHA, including population displacement, food security, conflict events, and national risk assessments.
+
+```rust
+use infrared::data_sources::HdxHapiClient;
+
+let client = HdxHapiClient::new("my-app-name");
+
+// Get humanitarian needs for a country (ISO alpha-3 code)
+let needs = client.get_humanitarian_needs("AFG").await?;
+
+// Get refugee statistics
+let refugees = client.get_refugees(Some("SYR"), None).await?;
+
+// Get internally displaced persons (IDP) data
+let idps = client.get_idps("UKR").await?;
+
+// Get food security (IPC phase) data
+let food_security = client.get_food_security("SOM").await?;
+
+// Check for famine conditions
+for record in food_security.data {
+    if record.is_famine() {
+        println!("CRITICAL: Famine conditions in {}", record.location_name);
+    } else if record.is_emergency_level() {
+        println!("Emergency food insecurity in {}", record.location_name);
+    }
+}
+
+// Get conflict events (via ACLED data)
+let conflicts = client.get_conflict_events("ETH").await?;
+
+// Get national risk indicators
+let risks = client.get_national_risk(None).await?;
+for risk in risks.data {
+    if risk.is_very_high_risk() {
+        println!("Very high risk: {} (score: {:?})",
+            risk.location_name, risk.overall_risk);
+    }
+}
+
+// Get food prices for market monitoring
+let prices = client.get_food_prices("YEM").await?;
+
+// Get operational presence (who does what where)
+let presence = client.get_operational_presence("SDN").await?;
+```
+
+### ACLED (Armed Conflict Location & Event Data)
+
+ACLED provides real-time data on political violence and protest activity worldwide. Requires free registration for API access.
+
+```rust
+use infrared::data_sources::AcledClient;
+
+// API key required - register at https://acleddata.com/register/
+let client = AcledClient::new("your-email@example.com", "your-api-key");
+
+// Get recent events for a country
+let events = client.get_events_by_country("Ukraine", Some(100)).await?;
+
+// Get events from last 30 days
+let recent = client.get_recent_events("Myanmar", 30, Some(200)).await?;
+
+// Get events by type
+let protests = client.get_events_by_type("Sudan", "Protests", Some(100)).await?;
+let battles = client.get_events_by_type("Syria", "Battles", Some(100)).await?;
+
+// Get events with fatalities
+let lethal = client.get_events_with_fatalities("Afghanistan", 10, Some(100)).await?;
+
+// Get events by date range
+let events = client.get_events_by_date_range(
+    "Ethiopia",
+    "2024-01-01",
+    "2024-06-30",
+    Some(500)
+).await?;
+
+// Get events by region (e.g., Middle East = 8)
+let middle_east = client.get_events_by_region(8, Some(200)).await?;
+
+// Analyze response
+println!("Total events: {}", events.count);
+println!("Total fatalities: {}", events.total_fatalities());
+
+let by_type = events.events_by_type();
+for (event_type, count) in by_type {
+    println!("{}: {} events", event_type, count);
+}
+
+// Filter specific event types
+for event in events.data {
+    if event.is_civilian_targeting() {
+        println!("Civilian targeting: {} in {}", event.location, event.event_date);
+    }
+}
+```
+
 ### Data Source Comparison
 
 | Source | Update Frequency | Auth Required | Best For |
 |--------|-----------------|---------------|----------|
-| IODA   | ~5 minutes      | No            | Outage detection, BGP analysis |
+| IODA   | ~5 minutes      | No            | Internet outage detection, BGP analysis |
 | Cloudflare Radar | ~15 minutes | Yes (free API token) | Traffic volume trends |
+| ReliefWeb | Near real-time | No (app name only) | Disaster tracking, humanitarian reports |
+| HDX HAPI | Daily/Weekly | No (app identifier only) | Humanitarian indicators, food security, displacement |
+| ACLED | Daily | Yes (free registration) | Conflict events, protests, violence tracking |
 
-Both sources provide **aggregate country-level data only**—no individual tracking.
+All sources provide **aggregate data only**—no individual tracking.
 
 ---
 
@@ -288,7 +434,10 @@ src/
 └── data_sources/    # External data source clients
     ├── mod.rs       # Module exports
     ├── ioda.rs      # IODA outage detection client
-    └── cloudflare.rs # Cloudflare Radar traffic client
+    ├── cloudflare.rs # Cloudflare Radar traffic client
+    ├── reliefweb.rs # ReliefWeb humanitarian data client
+    ├── hdx_hapi.rs  # HDX HAPI humanitarian indicators client
+    └── acled.rs     # ACLED conflict events client
 ```
 
 ---
